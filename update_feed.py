@@ -28,7 +28,7 @@ FEED_URL = os.environ.get(
 )
 KEEP = 30
 STATE_PATH = Path("state/episodes.json")
-OUTPUT_PATH = Path("site/feed.xml")
+OUTPUT_PATH = Path("docs/feed.xml")
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
