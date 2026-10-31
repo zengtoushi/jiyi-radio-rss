@@ -1,24 +1,24 @@
-# Personal Xiaoyuzhou RSS feeds
+# 记意电波 — Personal RSS
 
-This repository builds separate RSS feeds for public Xiaoyuzhou podcasts.
+This repository builds a personal RSS feed for the public Xiaoyuzhou podcast **记意电波**.
 
-## Current feeds
-
-| Podcast | RSS |
-|---|---|
-| 记意电波 | https://zengtoushi.github.io/jiyi-radio-rss/feed.xml |
-| 越位线 | https://zengtoushi.github.io/jiyi-radio-rss/feeds/yueweixian.xml |
-
+- Source: https://www.xiaoyuzhoufm.com/podcast/64341d0ec21112da279464c6
+- Published feed: `docs/feed.xml`
+- Retention: latest 30 episodes
 - Refresh: every 4 hours through GitHub Actions
-- Retention: latest 30 episodes per podcast
-- Audio remains hosted by Xiaoyuzhou; this project publishes public episode metadata and audio enclosure links only.
+- Audio remains hosted by Xiaoyuzhou; this project publishes episode metadata and public audio enclosure links only.
 
-## Add another Xiaoyuzhou podcast
+## One-time setup
 
-Add one object to the `podcasts` array in `config.json`. Give it a unique `slug`, the public podcast page URL, and unique `state_path`, `feed_path`, and `feed_url` values. The parser reads the public page's embedded `__NEXT_DATA__` podcast episode list.
+1. Open **Settings → Pages**.
+2. Under **Build and deployment → Source**, choose **GitHub Actions**.
+3. Open **Actions → Update podcast RSS → Run workflow** to run the first fetch.
+4. When the workflow succeeds and Pages finishes publishing, subscribe to:
 
-The workflow updates every configured feed. If any configured show fails to fetch, the run fails rather than committing a partially updated set of feeds.
+`https://zengtoushi.github.io/jiyi-radio-rss/feed.xml`
 
-## Setup
+The workflow keeps the newest 30 episodes. It preserves the existing feed if Xiaoyuzhou's page structure changes or a fetch returns no usable episodes.
 
-The GitHub Pages source should be set to **GitHub Actions**. Run **Actions → Update podcast RSS and publish Pages → Run workflow** to refresh feeds manually.
+## Important
+
+The initial run is also a compatibility test: Xiaoyuzhou may change its public page data format or restrict automated requests. If the run fails, open the failed run under **Actions** and share the error log; the parser will need adjustment before Pocket Casts can use the feed.
