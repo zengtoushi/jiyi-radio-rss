@@ -11,8 +11,7 @@ This repository builds a personal RSS feed for the public Xiaoyuzhou podcast **�
 ## One-time setup
 
 1. Open **Settings → Pages**.
-2. Under **Build and deployment**, choose **Deploy from a branch**.
-3. Select branch **main** and folder **/docs**, then save.
+2. Under **Build and deployment → Source**, choose **GitHub Actions**.
 4. Open **Actions → Update podcast RSS → Run workflow** to run the first fetch.
 5. When the workflow succeeds and Pages finishes publishing, subscribe to:
 
