@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Build one RSS feed per configured public Xiaoyuzhou podcast."""
+"""Build a small, self-hosted RSS feed for the public Xiaoyuzhou podcast page.
+
+Only public episode metadata is fetched. Audio remains hosted by Xiaoyuzhou.
+"""
 from __future__ import annotations
 
 import email.utils
 import html
 import json
+import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,14 +19,25 @@ from urllib.parse import urlparse
 
 import requests
 
-CONFIG_PATH = Path("config.json")
+PODCAST_ID = "64341d0ec21112da279464c6"
+PODCAST_URL = f"https://www.xiaoyuzhoufm.com/podcast/{PODCAST_ID}"
+EPISODE_URL = "https://www.xiaoyuzhoufm.com/episode/"
+FEED_URL = os.environ.get(
+    "FEED_URL",
+    "https://zengtoushi.github.io/jiyi-radio-rss/feed.xml",
+)
+KEEP = 30
+STATE_PATH = Path("state/episodes.json")
+OUTPUT_PATH = Path("docs/feed.xml")
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
 NS = {
     "itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd",
     "atom": "http://www.w3.org/2005/Atom",
+    "content": "http://purl.org/rss/1.0/modules/content/",
 }
 for prefix, uri in NS.items():
     ET.register_namespace(prefix, uri)
@@ -31,6 +47,7 @@ def parse_date(value):
     if not value:
         return None
     if isinstance(value, (int, float)):
+        # Xiaoyuzhou page data normally uses an ISO string, but tolerate epoch values.
         stamp = value / 1000 if value > 10_000_000_000 else value
         return datetime.fromtimestamp(stamp, tz=timezone.utc)
     text = str(value).strip()
@@ -44,15 +61,9 @@ def parse_date(value):
             return None
 
 
-def image_url(value):
-    if isinstance(value, dict):
-        return value.get("smallPicUrl") or value.get("picUrl") or value.get("url")
-    return value if isinstance(value, str) else None
-
-
-def fetch_source(show):
+def fetch_source():
     response = requests.get(
-        show["url"],
+        PODCAST_URL,
         headers={
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml",
@@ -67,13 +78,13 @@ def fetch_source(show):
         flags=re.S,
     )
     if not match:
-        raise RuntimeError(f'{show["name"]}: could not find __NEXT_DATA__ in the public page.')
+        raise RuntimeError("Could not find Xiaoyuzhou page data (__NEXT_DATA__).")
     data = json.loads(html.unescape(match.group(1)))
     page = data.get("props", {}).get("pageProps", {})
     podcast = page.get("podcast") or {}
     raw_episodes = podcast.get("episodes") or []
     if not raw_episodes:
-        raise RuntimeError(f'{show["name"]}: the public page returned no episodes.')
+        raise RuntimeError("Xiaoyuzhou returned no episodes; keeping the previous feed.")
     return podcast, raw_episodes
 
 
@@ -83,62 +94,73 @@ def normalize_episode(raw):
     audio = enclosure.get("url") or raw.get("audioUrl")
     if not eid or not audio:
         return None
-    if urlparse(audio).scheme not in ("http", "https"):
+    parsed = urlparse(audio)
+    if parsed.scheme not in ("http", "https"):
         return None
     pub = parse_date(raw.get("pubDate") or raw.get("pub_date"))
     return {
         "eid": str(eid),
         "title": str(raw.get("title") or "Untitled episode").strip(),
-        "url": "https://www.xiaoyuzhoufm.com/episode/" + str(eid),
+        "url": EPISODE_URL + str(eid),
         "audio": audio,
         "audio_type": enclosure.get("type") or "audio/mpeg",
         "audio_length": str(enclosure.get("length") or raw.get("size") or 0),
         "duration": int(raw.get("duration") or 0),
         "pub_date": pub.isoformat() if pub else None,
         "description": str(raw.get("shownotes") or raw.get("description") or ""),
-        "image": image_url(raw.get("image")),
+        "image": (
+            (raw.get("image") or {}).get("smallPicUrl")
+            if isinstance(raw.get("image"), dict)
+            else raw.get("image")
+        ),
     }
 
 
-def load_state(path):
-    if not path.exists():
+def load_state():
+    if not STATE_PATH.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
         return {item["eid"]: item for item in data.get("episodes", [])}
     except (OSError, ValueError, KeyError, TypeError):
         return {}
 
 
-def build_feed(podcast, episodes, show):
-    title = podcast.get("title") or show["name"]
-    podcast_url = show["url"]
-    description = podcast.get("description") or f"{title} - 小宇宙播客"
-    author = podcast.get("author") or title
-    cover = image_url(podcast.get("image"))
-
+def build_feed(podcast, episodes):
     channel = ET.Element("channel")
-    ET.SubElement(channel, "title").text = title
-    ET.SubElement(channel, "link").text = podcast_url
-    ET.SubElement(channel, "description").text = description
+    ET.SubElement(channel, "title").text = podcast.get("title") or "记意电波"
+    ET.SubElement(channel, "link").text = PODCAST_URL
+    ET.SubElement(channel, "description").text = (
+        podcast.get("description") or "一档意大利足球播客节目。"
+    )
     ET.SubElement(channel, "language").text = "zh-CN"
     ET.SubElement(channel, "lastBuildDate").text = email.utils.format_datetime(
         datetime.now(timezone.utc)
     )
     atom = ET.SubElement(channel, f"{{{NS['atom']}}}link")
-    atom.set("href", show["feed_url"])
+    atom.set("href", FEED_URL)
     atom.set("rel", "self")
     atom.set("type", "application/rss+xml")
 
-    if cover:
-        image = ET.SubElement(channel, "image")
-        ET.SubElement(image, "url").text = cover
-        ET.SubElement(image, "title").text = title
-        ET.SubElement(image, "link").text = podcast_url
-        ET.SubElement(channel, f"{{{NS['itunes']}}}image", {"href": cover})
+    image_url = None
+    image = podcast.get("image")
+    if isinstance(image, dict):
+        image_url = image.get("smallPicUrl") or image.get("picUrl")
+    elif isinstance(image, str):
+        image_url = image
+    if image_url:
+        image_node = ET.SubElement(channel, "image")
+        ET.SubElement(image_node, "url").text = image_url
+        ET.SubElement(image_node, "title").text = podcast.get("title") or "记意电波"
+        ET.SubElement(image_node, "link").text = PODCAST_URL
+        ET.SubElement(channel, f"{{{NS['itunes']}}}image", {"href": image_url})
 
-    ET.SubElement(channel, f"{{{NS['itunes']}}}author").text = author
-    ET.SubElement(channel, f"{{{NS['itunes']}}}summary").text = description
+    ET.SubElement(channel, f"{{{NS['itunes']}}}author").text = (
+        podcast.get("author") or "记意电波"
+    )
+    ET.SubElement(channel, f"{{{NS['itunes']}}}summary").text = (
+        podcast.get("description") or "一档意大利足球播客节目。"
+    )
     ET.SubElement(channel, f"{{{NS['itunes']}}}explicit").text = "false"
     ET.SubElement(channel, f"{{{NS['itunes']}}}type").text = "episodic"
 
@@ -162,10 +184,7 @@ def build_feed(podcast, episodes, show):
             seconds = episode["duration"]
             hours, remainder = divmod(seconds, 3600)
             minutes, secs = divmod(remainder, 60)
-            duration = (
-                f"{hours:02d}:{minutes:02d}:{secs:02d}"
-                if hours else f"{minutes:02d}:{secs:02d}"
-            )
+            duration = f"{hours:02d}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
             ET.SubElement(item, f"{{{NS['itunes']}}}duration").text = duration
         if episode.get("image"):
             ET.SubElement(item, f"{{{NS['itunes']}}}image", {"href": episode["image"]})
@@ -175,80 +194,45 @@ def build_feed(podcast, episodes, show):
     return ET.ElementTree(root)
 
 
-def update_show(show):
-    if show.get("platform") != "xiaoyuzhou":
-        raise RuntimeError(f'Unsupported platform for {show.get("name")}: {show.get("platform")}')
-
-    podcast, raw_episodes = fetch_source(show)
-    state_path = Path(show["state_path"])
-    output_path = Path(show["feed_path"])
-    known = load_state(state_path)
+def main():
+    podcast, raw_episodes = fetch_source()
+    known = load_state()
     fresh = 0
-
     for raw in raw_episodes:
-        episode = normalize_episode(raw)
-        if not episode:
+        item = normalize_episode(raw)
+        if not item:
             continue
-        old = known.get(episode["eid"], {})
-        known[episode["eid"]] = {
-            **old,
-            **{key: value for key, value in episode.items() if value not in (None, "")},
-        }
-        if episode["eid"] not in old:
+        old = known.get(item["eid"], {})
+        # Preserve a previously captured audio URL if the page temporarily omits it.
+        known[item["eid"]] = {**old, **{k: v for k, v in item.items() if v not in (None, "")}}
+        if item["eid"] not in old:
             fresh += 1
 
     if not known:
-        raise RuntimeError(f'{show["name"]}: no usable episodes; refusing to publish an empty feed.')
+        raise RuntimeError("No usable episodes found; refusing to publish an empty feed.")
 
     all_items = list(known.values())
     all_items.sort(
-        key=lambda item: parse_date(item.get("pub_date"))
-        or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda x: parse_date(x.get("pub_date")) or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
-    all_items = all_items[: int(show.get("max_episodes", 30))]
+    all_items = all_items[:KEEP]
 
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(
-        json.dumps(
-            {"podcast_id": podcast.get("pid"), "episodes": all_items},
-            ensure_ascii=False,
-            indent=2,
-        ) + "\n",
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(
+        json.dumps({"podcast_id": PODCAST_ID, "episodes": all_items}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    build_feed(podcast, all_items, show).write(
-        output_path, encoding="utf-8", xml_declaration=True
-    )
-    print(
-        f'{show["name"]}: published {len(all_items)} episodes; '
-        f'discovered {fresh} new episode(s).'
-    )
-    print(f'  Feed: {show["feed_url"]}')
-    print(f'  Newest: {all_items[0]["title"]}')
-
-
-def main():
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    shows = config.get("podcasts") or []
-    if not shows:
-        raise RuntimeError("config.json contains no podcasts.")
-
-    failures = []
-    for show in shows:
-        try:
-            update_show(show)
-        except Exception as exc:
-            failures.append(f'{show.get("name", show.get("slug", "unknown"))}: {exc}')
-            print(f"ERROR: {failures[-1]}", file=sys.stderr)
-
-    if failures:
-        raise RuntimeError(
-            "One or more podcast feeds failed; no updates will be committed: "
-            + " | ".join(failures)
-        )
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tree = build_feed(podcast, all_items)
+    tree.write(OUTPUT_PATH, encoding="utf-8", xml_declaration=True)
+    print(f"Published {len(all_items)} episodes; discovered {fresh} new episode(s).")
+    print(f"Newest: {all_items[0]['title']}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise
